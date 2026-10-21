@@ -45,6 +45,8 @@ const SensorReadingSchema = new mongoose.Schema({
   ph_voltage:      { type: Number, default: 0.0 },
   turbidity_voltage: { type: Number, default: 0.0 },
   turbidity_raw:   { type: Number, default: 0 },
+  turbidity_ntu:   { type: Number, default: -1 },
+  clock_quality:   { type: String, default: 'RTC_VERIFIED' },
   received_at:     { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -139,6 +141,8 @@ app.post('/api/sensor-data', async (req, res) => {
               ph_voltage: Number(item.ph_voltage || 0),
               turbidity_voltage: Number(item.turbidity_voltage || 0),
               turbidity_raw: Number(item.turbidity_raw || 0),
+              turbidity_ntu: Number(item.turbidity_ntu !== undefined ? item.turbidity_ntu : -1),
+              clock_quality: String(item.clock_quality || 'RTC_VERIFIED').trim(),
               received_at: new Date()
             }
           },
@@ -163,6 +167,8 @@ app.post('/api/sensor-data', async (req, res) => {
             temperature_c: latestItem.temperature_c,
             ph_estimate: latestItem.ph_estimate,
             turbidity_voltage: latestItem.turbidity_voltage,
+            turbidity_ntu: latestItem.turbidity_ntu,
+            clock_quality: latestItem.clock_quality,
             timestamp: new Date()
           },
           updated_at: new Date()
@@ -220,6 +226,32 @@ app.get('/api/latest', async (req, res) => {
     res.json({ success: true, reading });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/export-csv
+ * Direct streaming CSV download of all logged telemetry readings
+ */
+app.get('/api/export-csv', async (req, res) => {
+  try {
+    const { batch_id } = req.query;
+    const filter = batch_id ? { batch_id: String(batch_id).trim() } : {};
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="tepache_telemetry.csv"');
+
+    res.write('record_id,batch_id,timestamp_utc,elapsed_seconds,temperature_c,ph_estimate,ph_voltage,turbidity_voltage,turbidity_raw,turbidity_ntu,clock_quality\n');
+
+    const cursor = SensorReading.find(filter).sort({ record_id: 1 }).cursor();
+    for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+      const line = `${doc.record_id},${doc.batch_id},${doc.timestamp ? doc.timestamp.toISOString() : ''},${doc.elapsed_seconds || 0},${Number(doc.temperature_c || 0).toFixed(2)},${Number(doc.ph_estimate || 0).toFixed(2)},${Number(doc.ph_voltage || 0).toFixed(3)},${Number(doc.turbidity_voltage || 0).toFixed(3)},${doc.turbidity_raw || 0},${doc.turbidity_ntu !== undefined ? Number(doc.turbidity_ntu).toFixed(1) : '-1.0'},${doc.clock_quality || 'RTC_VERIFIED'}\n`;
+      res.write(line);
+    }
+    res.end();
+  } catch (err) {
+    console.error('[CSV EXPORT ERROR]', err.message);
+    res.status(500).send(`Export failed: ${err.message}`);
   }
 });
 
@@ -302,7 +334,10 @@ app.get('/', (req, res) => {
           <p style="font-size: 12px; color: var(--muted);">ESP32 Dev Module • MongoDB Atlas • Render</p>
         </div>
       </div>
-      <div class="status-pill">● Cloud Live</div>
+      <div style="display:flex; align-items:center; gap: 10px;">
+        <a href="/api/export-csv" class="status-pill" style="text-decoration:none; background: rgba(59,130,246,0.15); color: #60a5fa; border-color: rgba(59,130,246,0.35);">⬇ Export CSV</a>
+        <div class="status-pill">● Cloud Live</div>
+      </div>
     </header>
 
     <div class="grid">
@@ -344,7 +379,8 @@ app.get('/', (req, res) => {
             <th>Elapsed</th>
             <th>Temp (°C)</th>
             <th>pH</th>
-            <th>Turbidity (V)</th>
+            <th>Turbidity (V / NTU)</th>
+            <th>Clock Quality</th>
           </tr>
         </thead>
         <tbody id="tbody">
@@ -402,6 +438,8 @@ app.get('/', (req, res) => {
           const h = String(Math.floor(sec / 3600)).padStart(2, '0');
           const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
           const s = String(sec % 60).padStart(2, '0');
+          const turbNtuText = (r.turbidity_ntu !== undefined && r.turbidity_ntu >= 0) ? (' (' + r.turbidity_ntu.toFixed(0) + ' NTU)') : '';
+          const qualColor = r.clock_quality === 'UNCERTAIN_BOOT_CLOCK' ? '#f43f5e' : '#10b981';
           const row = document.createElement('tr');
           row.innerHTML = \`
             <td class="mono">#\${r.record_id}</td>
@@ -410,7 +448,8 @@ app.get('/', (req, res) => {
             <td>\${h}:\${m}:\${s}</td>
             <td>\${r.temperature_c.toFixed(2)} °C</td>
             <td>\${r.ph_estimate.toFixed(2)}</td>
-            <td>\${r.turbidity_voltage.toFixed(3)} V</td>
+            <td>\${r.turbidity_voltage.toFixed(3)} V\${turbNtuText}</td>
+            <td><span class="mono" style="font-size:11px; color: \${qualColor};">\${r.clock_quality || 'RTC_VERIFIED'}</span></td>
           \`;
           tbody.appendChild(row);
         });
