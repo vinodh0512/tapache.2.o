@@ -255,6 +255,30 @@ app.get('/api/export-csv', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/clear-data & DELETE /api/sensor-data
+ * Empties all records from MongoDB Atlas collection and resets batch summary
+ */
+const handleClearData = async (req, res) => {
+  try {
+    const readingResult = await SensorReading.deleteMany({});
+    const batchResult = await BatchSummary.deleteMany({});
+    console.log(`[DATABASE RESET] Deleted ${readingResult.deletedCount} readings and ${batchResult.deletedCount} batch summaries.`);
+    res.json({
+      success: true,
+      message: 'MongoDB database cleared successfully',
+      deleted_readings: readingResult.deletedCount,
+      deleted_batches: batchResult.deletedCount
+    });
+  } catch (err) {
+    console.error('[DATABASE RESET ERROR]', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+app.post('/api/clear-data', handleClearData);
+app.delete('/api/sensor-data', handleClearData);
+
 // ============================================================================
 // 5. EMBEDDED REAL-TIME WEB DASHBOARD (GET /)
 // ============================================================================
@@ -336,6 +360,7 @@ app.get('/', (req, res) => {
       </div>
       <div style="display:flex; align-items:center; gap: 10px;">
         <a href="/api/export-csv" class="status-pill" style="text-decoration:none; background: rgba(59,130,246,0.15); color: #60a5fa; border-color: rgba(59,130,246,0.35);">⬇ Export CSV</a>
+        <button onclick="clearDatabase()" class="status-pill" style="cursor:pointer; background: rgba(244,63,94,0.15); color: #f43f5e; border-color: rgba(244,63,94,0.35);">🗑 Empty Database</button>
         <div class="status-pill">● Cloud Live</div>
       </div>
     </header>
@@ -463,6 +488,24 @@ app.get('/', (req, res) => {
 
       } catch (e) {
         console.error('Fetch error:', e);
+      }
+    }
+
+    async function clearDatabase() {
+      const confirmReset = confirm("⚠️ Are you sure you want to empty the MongoDB database?\\n\\nAll recorded telemetry will be permanently deleted from the cloud. This action cannot be undone.");
+      if (!confirmReset) return;
+
+      try {
+        const res = await fetch('/api/clear-data', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert("✅ Database emptied! (" + data.deleted_readings + " records deleted).");
+          location.reload();
+        } else {
+          alert("Error clearing database: " + data.error);
+        }
+      } catch (e) {
+        alert("Failed to communicate with server: " + e.message);
       }
     }
 
