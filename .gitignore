@@ -1,0 +1,43 @@
+# ==============================================================================
+# Tepache Backend .gitignore
+# Prevents sensitive credentials, dependencies, and environment files from being committed
+# ==============================================================================
+
+# Node dependencies
+node_modules/
+package-lock.json
+
+# Environment variables & secrets (CRITICAL: Do NOT remove)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE and Editor directories
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
