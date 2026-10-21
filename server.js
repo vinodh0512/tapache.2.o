@@ -441,9 +441,10 @@ app.get('/', (req, res) => {
 // ============================================================================
 // 6. SERVER START
 // ============================================================================
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Ingestion Engine online on port ${PORT}`);
-  console.log(`[SERVER] Health check  : http://localhost:${PORT}/health`);
-  console.log(`[SERVER] Ingestion URL : http://localhost:${PORT}/api/sensor-data`);
-  console.log(`[SERVER] Live Dashboard: http://localhost:${PORT}/`);
+  console.log(`[SERVER] Live URL      : https://tapache-2-o.onrender.com`);
+  console.log(`[SERVER] Health check  : https://tapache-2-o.onrender.com/health`);
+  console.log(`[SERVER] Ingestion URL : https://tapache-2-o.onrender.com/api/sensor-data`);
+  console.log(`[SERVER] Live Dashboard: https://tapache-2-o.onrender.com/`);
 });
