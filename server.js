@@ -445,6 +445,15 @@ app.get('/', (req, res) => {
       padding: 6px 14px; border-radius: 99px;
       color: var(--green); font-size: 13px; font-weight: 600;
     }
+    .pulse-dot {
+      width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block;
+      animation: pulse 1.4s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+      100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
     .grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 16px; margin-bottom: 24px;
@@ -479,7 +488,7 @@ app.get('/', (req, res) => {
       <div style="display:flex; align-items:center; gap: 10px;">
         <a href="/api/export-csv" class="status-pill" style="text-decoration:none; background: rgba(59,130,246,0.15); color: #60a5fa; border-color: rgba(59,130,246,0.35);">⬇ Export CSV</a>
         <button onclick="clearDatabase()" class="status-pill" style="cursor:pointer; background: rgba(244,63,94,0.15); color: #f43f5e; border-color: rgba(244,63,94,0.35);">🗑 Empty Database</button>
-        <div class="status-pill">● Cloud Live</div>
+        <div class="status-pill" style="display:flex; align-items:center; gap:8px;"><span class="pulse-dot"></span> Live Real-time (1s)</div>
       </div>
     </header>
 
@@ -549,6 +558,7 @@ app.get('/', (req, res) => {
         },
         options: {
           responsive: true, maintainAspectRatio: false,
+          animation: false,
           scales: {
             x: { ticks: { color: '#64748b' } },
             yPh: { type: 'linear', position: 'left', min: 2, max: 8, ticks: { color: '#f43f5e' } },
@@ -560,13 +570,19 @@ app.get('/', (req, res) => {
       });
     }
 
+    let lastRecordId = null;
+    let isFetching = false;
+
     async function loadData() {
       try {
-        const res = await fetch('/api/sensor-data?limit=25');
+        const res = await fetch('/api/sensor-data?limit=25&_t=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
         if (!data.success || !data.records.length) return;
 
         const latest = data.records[0];
+        if (lastRecordId === latest.record_id) return;
+        lastRecordId = latest.record_id;
+
         document.getElementById('phVal').innerText = latest.ph_estimate.toFixed(2);
         document.getElementById('phSub').innerText = 'Voltage: ' + latest.ph_voltage.toFixed(3) + ' V';
         document.getElementById('tempVal').innerText = latest.temperature_c.toFixed(2) + ' °C';
@@ -602,10 +618,21 @@ app.get('/', (req, res) => {
         chart.data.datasets[0].data = rev.map(r => r.ph_estimate);
         chart.data.datasets[1].data = rev.map(r => r.temperature_c);
         chart.data.datasets[2].data = rev.map(r => r.turbidity_voltage);
-        chart.update();
+        chart.update('none');
 
       } catch (e) {
         console.error('Fetch error:', e);
+      }
+    }
+
+    async function streamLoop() {
+      if (isFetching) return;
+      isFetching = true;
+      try {
+        await loadData();
+      } finally {
+        isFetching = false;
+        setTimeout(streamLoop, 1000); // 1-second refresh
       }
     }
 
@@ -629,8 +656,7 @@ app.get('/', (req, res) => {
 
     window.addEventListener('DOMContentLoaded', () => {
       initChart();
-      loadData();
-      setInterval(loadData, 5000);
+      streamLoop();
     });
   </script>
 </body>
