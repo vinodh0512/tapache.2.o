@@ -23,7 +23,10 @@ const MONGODB_URI = process.env.MONGODB_URI ||
 console.log('[DATABASE] Connecting to MongoDB Atlas...');
 
 mongoose.connect(MONGODB_URI, {
-  serverSelectionTimeoutMS: 8000,
+  serverSelectionTimeoutMS: 5000,
+  maxPoolSize: 20,
+  minPoolSize: 5,
+  socketTimeoutMS: 20000,
 })
 .then(() => {
   console.log('[DATABASE] Connected to MongoDB Atlas (tepache_db) successfully!');
@@ -53,6 +56,7 @@ const SensorReadingSchema = new mongoose.Schema({
 // CRITICAL COMPOUND UNIQUE INDEX: Zero duplicate records on network retries
 SensorReadingSchema.index({ batch_id: 1, record_id: 1 }, { unique: true });
 SensorReadingSchema.index({ batch_id: 1, timestamp: -1 });
+SensorReadingSchema.index({ record_id: -1 });
 
 const SensorReading = mongoose.model('SensorReading', SensorReadingSchema);
 
@@ -71,7 +75,7 @@ const BatchSummary = mongoose.model('BatchSummary', BatchSummarySchema);
 // ============================================================================
 // 3. MIDDLEWARE
 // ============================================================================
-app.use(cors());
+app.use(cors({ maxAge: 86400 }));
 app.use(express.json({ limit: '2mb' }));
 
 // ============================================================================
@@ -202,13 +206,19 @@ app.get('/api/sensor-data', async (req, res) => {
   try {
     const { batch_id, limit = 50 } = req.query;
     const filter = batch_id ? { batch_id: String(batch_id).trim() } : {};
-    const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 500);
+    const isAll = limit === 'all' || limit === '0' || Number(limit) === 0;
 
-    const records = await SensorReading.find(filter)
+    let query = SensorReading.find(filter)
       .sort({ record_id: -1 })
-      .limit(limitNum)
-      .lean();
+      .select('-__v');
 
+    if (!isAll) {
+      const limitNum = Math.min(Math.max(Number(limit) || 25, 1), 50000);
+      query = query.limit(limitNum);
+    }
+
+    const records = await query.lean();
+    res.set('Cache-Control', 'no-cache');
     res.json({ success: true, count: records.length, records });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -278,6 +288,114 @@ const handleClearData = async (req, res) => {
 
 app.post('/api/clear-data', handleClearData);
 app.delete('/api/sensor-data', handleClearData);
+
+// ============================================================================
+// 4.1 MACHINE LEARNING INFERENCE & ANALYTICS INTEGRATION
+// ============================================================================
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
+const fs = require('fs');
+const path = require('path');
+
+const proxyToML = async (req, res, targetPath, method = 'GET', body = null) => {
+  try {
+    const url = `${ML_SERVICE_URL}${targetPath}`;
+    const options = {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+    };
+    if (body && (method === 'POST' || method === 'PUT')) {
+      options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(url, options);
+    const data = await response.json();
+    return res.status(response.status).json(data);
+  } catch (err) {
+    // Graceful offline fallback
+    if (targetPath.startsWith('/api/ml/metrics')) {
+      try {
+        const metricsFile = path.resolve(__dirname, '../model/saved_models/metrics.json');
+        if (fs.existsSync(metricsFile)) {
+          const fileData = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+          return res.json({ success: true, metrics: fileData, source: 'cached_disk_artifact' });
+        }
+      } catch (fErr) {
+        // Continue to offline error
+      }
+    }
+
+    return res.status(503).json({
+      success: false,
+      service: 'tepache-ml-service',
+      status: 'offline',
+      error: `Could not connect to Python ML service at ${ML_SERVICE_URL}: ${err.message}`,
+      recommendation: 'Start the Python ML service using: python -m uvicorn model.ml_api:app --port 8000'
+    });
+  }
+};
+
+app.get('/api/ml/status', (req, res) => {
+  proxyToML(req, res, '/api/ml/status', 'GET');
+});
+
+app.get('/api/ml/metrics', (req, res) => {
+  proxyToML(req, res, '/api/ml/metrics', 'GET');
+});
+
+app.post('/api/ml/predict', async (req, res) => {
+  let payload = req.body;
+
+  // Auto-populate with latest MongoDB reading if request body is empty
+  if (!payload || !payload.current_reading) {
+    try {
+      const latest = await SensorReading.findOne().sort({ record_id: -1 }).lean();
+      if (latest) {
+        payload = {
+          current_reading: {
+            record_id: latest.record_id,
+            batch_id: latest.batch_id,
+            timestamp: latest.timestamp,
+            elapsed_seconds: latest.elapsed_seconds,
+            temperature_c: latest.temperature_c,
+            ph_estimate: latest.ph_estimate,
+            ph_voltage: latest.ph_voltage,
+            turbidity_voltage: latest.turbidity_voltage,
+            turbidity_raw: latest.turbidity_raw,
+            turbidity_ntu: latest.turbidity_ntu
+          },
+          forecast_horizon_minutes: (req.query && req.query.horizon) ? Number(req.query.horizon) : 15
+        };
+      }
+    } catch (e) {
+      console.warn('[ML PREDICT] Could not fetch latest MongoDB reading:', e.message);
+    }
+  }
+
+  proxyToML(req, res, '/api/ml/predict', 'POST', payload);
+});
+
+app.get('/api/ml/anomalies', (req, res) => {
+  const queryStr = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+  proxyToML(req, res, `/api/ml/anomalies${queryStr}`, 'GET');
+});
+
+app.get('/api/ml/readiness', async (req, res) => {
+  let queryStr = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+
+  // Auto-fill query params from latest MongoDB record if no params provided
+  if (!queryStr || queryStr === '?') {
+    try {
+      const latest = await SensorReading.findOne().sort({ record_id: -1 }).lean();
+      if (latest) {
+        queryStr = `?temp_c=${latest.temperature_c}&ph_estimate=${latest.ph_estimate}&turbidity_NTU=${latest.turbidity_ntu >= 0 ? latest.turbidity_ntu : 100}&elapsed_seconds=${latest.elapsed_seconds || 0}`;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  proxyToML(req, res, `/api/ml/readiness${queryStr}`, 'GET');
+});
 
 // ============================================================================
 // 5. EMBEDDED REAL-TIME WEB DASHBOARD (GET /)
